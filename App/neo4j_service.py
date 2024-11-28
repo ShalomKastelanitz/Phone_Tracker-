@@ -1,82 +1,80 @@
-class Queries:
+class InsightsRepository:
     def __init__(self, driver):
         self.driver = driver
 
     def get_bluetooth_connections(self):
         with self.driver.session() as session:
-            result = session.run("""
+            query = """
                 MATCH (start:Device)
                 MATCH (end:Device)
                 WHERE start <> end
-                MATCH path = shortestPath((start)-[:INTERACTED_WITH*]->(end))
+                MATCH path = shortestPath((start)-[:CONNECTED*]->(end))
                 WHERE ALL(r IN relationships(path) WHERE r.method = 'Bluetooth')
                 WITH path, length(path) as pathLength
                 ORDER BY pathLength DESC
                 LIMIT 1
-                RETURN length(path) as lennnn
-            """)
-            record = result.single()
-            return {"bluetooth_connection_length": record['lennnn'] if record else 0}
+                RETURN length(path) as path_length
+            """
 
-    def find_relationships_with_signal_strength(self):
+            result = session.run(query).single()
+            if result is None:
+                return None
+            return result['path_length']
+
+    def get_signal_strength(self):
         with self.driver.session() as session:
-            result = session.run("""
-                MATCH (d:Device)-[r:INTERACTED_WITH]-(d2:Device)
+            query = """
+                MATCH (d1:Device)-[r:CONNECTED]->(d2:Device)
                 WHERE r.signal_strength_dbm > -60
-                RETURN r.id AS rId, d.id AS deviceId, d2.id AS connectedDeviceId, r.signal_strength_dbm as signal_strength_dbm
-            """)
-            return [{"id": record['rId'], "from": record['deviceId'],
-                     "to": record['connectedDeviceId'],
-                     "signalStrength": record['signal_strength_dbm']} for record in result]
+                RETURN d1.name as from_name, 
+                       d2.name as to_name, 
+                       r.signal_strength_dbm as signal_strength
+            """
 
-
-    def count_connected_devices(self, device_id):
-        device_id = device_id.strip()
-
-        with self.driver.session() as session:
-            result = session.run("""
-                MATCH (d:Device)-[:INTERACTED_WITH]-(connected_device:Device)
-                WHERE d.id = $device_id 
-                RETURN COUNT(connected_device) AS connected_count
-            """, device_id=device_id)
-            record = result.single()
-            return {"connected_devices_count": record['connected_count']} if record else {"connected_devices_count": 0}
-
-
-    def is_direct_connection(self, device_id_1, device_id_2):
-        device_id_1 = device_id_1.strip()
-        device_id_2 = device_id_2.strip()
-
-        with self.driver.session() as session:
-            result = session.run("""
-                MATCH (d1:Device)-[:INTERACTED_WITH]-(d2:Device)
-                WHERE d1.id = $device_id_1 AND d2.id = $device_id_2
-                RETURN d1, d2
-            """, device_id_1=device_id_1, device_id_2=device_id_2)
-            record = result.single()
-            return True if record else False
-
-    def get_last_device_connection(self, device_id):
-        device_id = device_id.strip()
-
-        with self.driver.session() as session:
-            result = session.run("""
-                MATCH (n:Device)-[r:INTERACTED_WITH]-(n2:Device)
-                WHERE n.id = $device_id
-                RETURN r.timestamp AS timestamp, properties(r) AS r_properties
-                ORDER BY r.timestamp DESC
-                LIMIT 1
-            """, device_id=device_id)
-
-            record = result.single()
-
-            if not record:
+            result = session.run(query)
+            if result is None:
                 return None
 
+            signals = [{"from": record['from_name'],
+                        "to": record["to_name"],
+                        "strength": record['signal_strength']}
+                       for record in result]
+            print(signals)
+            return signals
 
-            timestamp = record["timestamp"] if record["timestamp"] else None
+    def get_connected_count(self, device_id):
+        with self.driver.session() as session:
+            query = """
+                MATCH (d1:Device {device_id: $device_id})-[r:CONNECTED]-(d2:Device)
+                RETURN COUNT(d2) as connected_count
+            """
 
-            return {
-                'timestamp': timestamp,
-                'properties': record["r_properties"]
-            }
+            result = session.run(query, device_id=device_id).single()
+            if result is None:
+                return 0
+            return result['connected_count']
+
+    def check_connection_status(self, device_id1, device_id2):
+        with self.driver.session() as session:
+            query = """
+                MATCH (d1:Device {device_id: $device_id1})-[r:CONNECTED]-(d2:Device {device_id: $device_id2})
+                RETURN d1
+            """
+
+            result = session.run(query, device_id1=device_id1, device_id2=device_id2).single()
+            return result is not None
+
+    def get_last_interaction(self, device_id):
+        with self.driver.session() as session:
+            query = """
+                MATCH (d1:Device {device_id: $device_id})-[r:CONNECTED]-(d2:Device)
+                ORDER BY r.timestamp DESC
+                LIMIT 1
+                RETURN d2.name as name,
+                       r.timestamp as timestamp
+            """
+
+            result = session.run(query, device_id=device_id).single()
+            if result is None:
+                return None
+            return {'name': result['name'], 'timestamp': result['timestamp'].isoformat()}
